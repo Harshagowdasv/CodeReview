@@ -1,0 +1,14 @@
+[project]
+name = "code-review"
+version = "0.1.0"
+description = "Code review environment for OpenEnv"
+authors = [
+    {name = "Harsha"}
+]
+dependencies = [
+    "fastapi",
+    "uvicorn"
+]
+
+[tool.setuptools]
+packages = ["server"]
