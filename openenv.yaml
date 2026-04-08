@@ -1,0 +1,60 @@
+name: code-review-env
+version: "1.0.0"
+description: >
+  A real-world RL environment where an AI agent reviews code diffs (pull requests),
+  identifies bugs, style issues, and security problems, and receives graded rewards
+  based on the quality, correctness, and completeness of its review comments.
+tags:
+  - code-review
+  - software-engineering
+  - real-world
+  - openenv
+
+action:
+  type: string
+  description: >
+    A structured code review comment in the format:
+    "SEVERITY: <critical|major|minor|info> | LINE: <line_number_or_range> | ISSUE: <description> | SUGGESTION: <fix>"
+    Multiple issues should be separated by newlines. Each line must follow this format.
+
+observation:
+  type: string
+  description: >
+    A code diff (unified diff format) along with metadata such as file name,
+    programming language, and any existing test coverage info. The agent must
+    review the diff and produce actionable feedback.
+
+state:
+  type: object
+  description: >
+    Internal environment state tracking the current diff, ground truth issues,
+    step count, and accumulated review quality score.
+
+tasks:
+  - id: easy
+    name: Simple Bug Detection
+    description: >
+      Review a short Python function diff (5-20 lines) containing 1-2 obvious bugs
+      such as off-by-one errors, wrong variable names, or missing null checks.
+    difficulty: easy
+    max_steps: 5
+    reward_range: [0.0, 1.0]
+
+  - id: medium
+    name: Multi-file Logic Review
+    description: >
+      Review a diff spanning multiple functions (20-60 lines) with 2-4 issues including
+      logic errors, missing edge cases, and poor error handling in Python or JavaScript.
+    difficulty: medium
+    max_steps: 8
+    reward_range: [0.0, 1.0]
+
+  - id: hard
+    name: Security & Architecture Review
+    description: >
+      Review a complex diff (60-150 lines) containing subtle security vulnerabilities
+      (SQL injection, XSS, race conditions), architectural issues, and performance
+      anti-patterns across multiple files.
+    difficulty: hard
+    max_steps: 12
+    reward_range: [0.0, 1.0]
