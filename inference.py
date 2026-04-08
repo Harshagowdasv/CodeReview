@@ -6,21 +6,42 @@ Environment variables required:
   - API_BASE_URL : HF router endpoint (default: https://router.huggingface.co/v1)
   - MODEL_NAME   : Model identifier (e.g. meta-llama/Llama-3.3-70B-Instruct)
   - HF_TOKEN     : Your Hugging Face API key
+  - ENV_URL      : Environment server URL
 """
 
 import os
-import re
+import time
+import requests
 from openai import OpenAI
 
+# ── Config ───────────────────────────────────────────────────────────────────
+API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
+MODEL_NAME   = os.getenv("MODEL_NAME",   "meta-llama/Llama-3.3-70B-Instruct")
+HF_TOKEN     = os.getenv("HF_TOKEN")
+
+ENV_URL      = os.getenv("ENV_URL", "http://localhost:7860")
 
 MAX_STEPS    = 8
 TEMPERATURE  = 0.2
 MAX_TOKENS   = 1024
-FALLBACK_ACTION = "SEVERITY: info | LINE: 1 | ISSUE: Unable to parse diff | SUGGESTION: noop()"
+RETRY_COUNT  = 2
+DEBUG        = True
+
+FALLBACK_ACTION = (
+    "SEVERITY: info | LINE: 1 | ISSUE: Unable to parse diff | SUGGESTION: noop()"
+)
 
 TASKS = ["easy", "medium", "hard"]
 
-# ── OpenAI-compatible client pointing at HF Router ──────────────────────────
+# ── Validate Environment ─────────────────────────────────────────────────────
+if not HF_TOKEN:
+    raise ValueError("❌ HF_TOKEN is missing! Add it in Hugging Face Secrets.")
+
+print(f"✅ Using Model: {MODEL_NAME}")
+print(f"🌐 API Base: {API_BASE_URL}")
+print(f"🧪 ENV URL: {ENV_URL}")
+
+# ── Client Setup ─────────────────────────────────────────────────────────────
 client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN)
 
 SYSTEM_PROMPT = """\
@@ -40,35 +61,40 @@ Rules:
 - Do not add any preamble or explanation outside the format
 """
 
-
+# ── LLM Call with Retry ──────────────────────────────────────────────────────
 def call_llm(messages: list) -> str:
-    try:
-        completion = client.chat.completions.create(
-            model=MODEL_NAME,
-            messages=messages,
-            temperature=TEMPERATURE,
-            max_tokens=MAX_TOKENS,
-            stream=False,
-        )
-        return completion.choices[0].message.content or FALLBACK_ACTION
-    except Exception as exc:
-        print(f"LLM call failed: {exc}. Using fallback action.")
-        return FALLBACK_ACTION
+    for attempt in range(RETRY_COUNT):
+        try:
+            completion = client.chat.completions.create(
+                model=MODEL_NAME,
+                messages=messages,
+                temperature=TEMPERATURE,
+                max_tokens=MAX_TOKENS,
+            )
+            return completion.choices[0].message.content or FALLBACK_ACTION
+
+        except Exception as exc:
+            print(f"⚠️ LLM call failed (attempt {attempt+1}): {exc}")
+            time.sleep(1)
+
+    print("❌ All retries failed. Using fallback.")
+    return FALLBACK_ACTION
 
 
+# ── Run Task ─────────────────────────────────────────────────────────────────
 def run_task(env_url: str, task_id: str) -> float:
-    """Run one full episode for a given task difficulty. Returns final reward."""
-    import requests
-
     print(f"\n{'='*60}")
-    print(f"  TASK: {task_id.upper()}")
+    print(f"🚀 TASK: {task_id.upper()}")
     print(f"{'='*60}")
 
-    # Reset environment
-    reset_resp = requests.post(f"{env_url}/reset", json={"task_id": task_id}, timeout=30)
+    # Reset
+    reset_resp = requests.post(
+        f"{env_url}/reset", json={"task_id": task_id}, timeout=30
+    )
     reset_resp.raise_for_status()
+
     observation = reset_resp.json()["observation"]
-    print(f"[RESET] Got diff ({len(observation)} chars)")
+    print(f"[RESET] Diff size: {len(observation)} chars")
 
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     final_reward = 0.0
@@ -77,57 +103,65 @@ def run_task(env_url: str, task_id: str) -> float:
         messages.append({"role": "user", "content": observation})
 
         action = call_llm(messages)
-        print(f"\n[STEP {step}] Agent action:\n{action[:300]}{'...' if len(action)>300 else ''}")
+
+        if DEBUG:
+            print(f"\n[STEP {step}] Action:\n{action[:300]}{'...' if len(action)>300 else ''}")
 
         messages.append({"role": "assistant", "content": action})
 
-        # Send action to environment
+        # Step
         step_resp = requests.post(
             f"{env_url}/step",
             json={"action": action},
             timeout=30,
         )
         step_resp.raise_for_status()
+
         result = step_resp.json()
 
         observation = result["observation"]
-        reward      = result["reward"]
-        done        = result["done"]
-        info        = result.get("info", {})
+        reward = result["reward"]
+        done = result["done"]
+        info = result.get("info", {})
 
         final_reward = reward
-        print(f"[STEP {step}] Reward: {reward:.2f} | Issues found: {info.get('issues_found',0)}/{info.get('total_issues',0)} | Done: {done}")
+
+        print(
+            f"[STEP {step}] Reward: {reward:.2f} | "
+            f"Issues: {info.get('issues_found',0)}/{info.get('total_issues',0)} | Done: {done}"
+        )
 
         if done:
-            print(f"[DONE] Episode finished at step {step}.")
+            print(f"✅ Finished at step {step}")
             break
 
-    print(f"\n[RESULT] Task '{task_id}' final reward: {final_reward:.2f}")
+    print(f"\n🎯 FINAL SCORE ({task_id}): {final_reward:.2f}")
     return final_reward
 
 
+# ── Main ─────────────────────────────────────────────────────────────────────
 def main():
-    env_url = os.getenv("ENV_URL", "http://localhost:7860")
-    print(f"Code Review Assistant - Inference Script")
-    print(f"Model : {MODEL_NAME}")
-    print(f"Server: {env_url}")
+    print("\n🧠 Code Review Agent - Starting...\n")
 
     scores = {}
+
     for task_id in TASKS:
         try:
-            scores[task_id] = run_task(env_url, task_id)
+            scores[task_id] = run_task(ENV_URL, task_id)
         except Exception as e:
-            print(f"[ERROR] Task '{task_id}' failed: {e}")
+            print(f"❌ Task '{task_id}' failed: {e}")
             scores[task_id] = 0.0
 
     print(f"\n{'='*60}")
-    print("  FINAL SCORES")
+    print("🏁 FINAL RESULTS")
     print(f"{'='*60}")
+
     for task, score in scores.items():
         bar = "█" * int(score * 20) + "░" * (20 - int(score * 20))
-        print(f"  {task:8s}: [{bar}] {score:.4f}")
+        print(f"{task:8s}: [{bar}] {score:.4f}")
+
     avg = sum(scores.values()) / len(scores)
-    print(f"  {'AVERAGE':8s}: {avg:.4f}")
+    print(f"{'AVERAGE':8s}: {avg:.4f}")
     print(f"{'='*60}")
 
 
