@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException, Body
 from pydantic import BaseModel
 from typing import Optional
-from server.env import CodeReviewEnv, Action
+from env import CodeReviewEnv, Action
 
 app = FastAPI()
 
