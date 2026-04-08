@@ -4,5 +4,3 @@ openenv>=0.2.0
 pydantic
 requests
 openai
-uv
-uv lock
