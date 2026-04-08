@@ -12,10 +12,6 @@ import os
 import re
 from openai import OpenAI
 
-# ── Config (read from environment) ──────────────────────────────────────────
-API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
-MODEL_NAME   = os.getenv("MODEL_NAME",   "meta-llama/Llama-3.3-70B-Instruct")
-HF_TOKEN     = os.getenv("HF_TOKEN",     "")
 
 MAX_STEPS    = 8
 TEMPERATURE  = 0.2
