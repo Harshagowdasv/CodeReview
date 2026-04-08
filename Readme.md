@@ -1,3 +1,14 @@
+---
+title: Code Review Assistant OpenEnv
+emoji: 🔍
+colorFrom: blue
+colorTo: green
+sdk: docker
+pinned: false
+tags:
+  - openenv
+---
+
 # 🔍 Code Review Assistant — OpenEnv RL Environment
 
 A real-world reinforcement learning environment where an AI agent reviews **code diffs** (pull requests), identifies bugs and security issues, and receives **graded rewards** based on review quality.
