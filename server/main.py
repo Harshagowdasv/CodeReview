@@ -1,262 +1,223 @@
 """
-server/main.py — FastAPI server for Code Review RL Environment
-Fixed: /reset endpoint now accepts POST with no body (task_id defaults to "easy")
+FastAPI HTTP server wrapping the CodeReviewEnv.
+Implements the OpenEnv standard API: /reset, /step, /state
+
+KEY FIX: /reset accepts POST with NO body (task_id defaults to "easy")
+         using Body(default=ResetRequest()) — this is what the platform sends.
 """
 
-from fastapi import FastAPI, Body
+from fastapi import FastAPI, HTTPException, Body
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from typing import Optional
-import random
+from env import CodeReviewEnv, Action
 
-app = FastAPI(title="Code Review RL Environment")
+app = FastAPI(
+    title="Code Review Assistant - OpenEnv",
+    description="RL environment where an AI agent reviews code diffs and receives graded rewards.",
+    version="1.0.0",
+)
 
-# ── Pydantic models ──────────────────────────────────────────────────────────
+env = CodeReviewEnv()
+
 
 class ResetRequest(BaseModel):
-    task_id: Optional[str] = "easy"   # ← KEY FIX: optional with default
+    task_id: Optional[str] = "easy"   # optional — defaults to "easy"
+
 
 class StepRequest(BaseModel):
     action: str
 
-# ── Diff bank (easy / medium / hard) ────────────────────────────────────────
 
-TASKS = {
-    "easy": {
-        "diff": """\
---- a/utils.py
-+++ b/utils.py
-@@ -1,10 +1,10 @@
- def get_user(users, idx):
--    for i in range(len(users) + 1):   # off-by-one: raises IndexError
-+    for i in range(len(users)):
-         if users[i].id == idx:
-             return users[i]
--    return users[0]                    # wrong fallback, should be None
-+    return None
+# ── UI ───────────────────────────────────────────────────────────────────────
 
- def hash_password(pw):
--    return pw                          # plaintext – never store raw passwords
-+    import hashlib
-+    return hashlib.sha256(pw.encode()).hexdigest()
-""",
-        "ground_truth": [
-            "off-by-one error in range",
-            "wrong fallback return value",
-            "plaintext password storage",
-        ],
-        "max_steps": 5,
-    },
-    "medium": {
-        "diff": """\
---- a/api/orders.py
-+++ b/api/orders.py
-@@ -1,20 +1,20 @@
- import sqlite3
-
- def get_order(order_id):
-     conn = sqlite3.connect("orders.db")
-     cur = conn.cursor()
--    cur.execute(f"SELECT * FROM orders WHERE id = {order_id}")  # SQL injection
-+    cur.execute("SELECT * FROM orders WHERE id = ?", (order_id,))
-     return cur.fetchone()
-
- def update_status(order_id, user_id, new_status):
--    if new_status in ["pending", "shipped", "delivered"]:  # missing auth check
-+    order = get_order(order_id)
-+    if order is None:
-+        raise ValueError("Order not found")
-+    if order["user_id"] != user_id:
-+        raise PermissionError("Not your order")
-+    if new_status in ["pending", "shipped", "delivered"]:
-         _write_status(order_id, new_status)
--    # no else: silent failure on invalid status
-+    else:
-+        raise ValueError(f"Invalid status: {new_status}")
-""",
-        "ground_truth": [
-            "sql injection",
-            "missing authorization check",
-            "silent failure on invalid status",
-        ],
-        "max_steps": 8,
-    },
-    "hard": {
-        "diff": """\
---- a/auth/session.py
-+++ b/auth/session.py
-@@ -1,30 +1,30 @@
- import os, time, hashlib
-
- SESSION_STORE = {}
-
- def create_session(user_id):
--    token = hashlib.md5(str(user_id).encode()).hexdigest()  # weak token
-+    token = os.urandom(32).hex()
-     SESSION_STORE[token] = {"user_id": user_id, "created": time.time()}
-     return token
-
- def validate_session(token):
-     session = SESSION_STORE.get(token)
-     if session is None:
-         return None
--    # no expiry check — sessions last forever
-+    if time.time() - session["created"] > 3600:
-+        del SESSION_STORE[token]
-+        return None
-     return session["user_id"]
-
- def render_profile(user_input):
--    return f"<h1>Hello {user_input}</h1>"   # XSS vulnerability
-+    import html
-+    return f"<h1>Hello {html.escape(user_input)}</h1>"
-
- def load_file(path):
--    with open(path) as f:                   # path traversal
-+    base = "/var/app/data/"
-+    safe = os.path.realpath(os.path.join(base, path))
-+    if not safe.startswith(base):
-+        raise PermissionError("Path traversal blocked")
-+    with open(safe) as f:
-         return f.read()
-""",
-        "ground_truth": [
-            "weak session token (md5)",
-            "no session expiry",
-            "xss vulnerability",
-            "path traversal",
-        ],
-        "max_steps": 12,
-    },
-}
-
-# ── In-memory state ──────────────────────────────────────────────────────────
-
-state = {
-    "step": 0,
-    "current_task": None,
-    "diff": "",
-    "ground_truth_issues": [],
-    "found_issues": [],
-    "score": 0.0,
-    "done": False,
-}
-
-# ── Helper ───────────────────────────────────────────────────────────────────
-
-def compute_reward(action: str, ground_truth: list) -> tuple[float, list]:
-    action_lower = action.lower()
-    found = []
-    for issue in ground_truth:
-        keywords = issue.lower().split()
-        if any(kw in action_lower for kw in keywords):
-            found.append(issue)
-
-    coverage = len(found) / max(len(ground_truth), 1)
-
-    # Structure bonus: must contain SEVERITY, LINE, ISSUE, SUGGESTION
-    required = ["severity:", "line:", "issue:", "suggestion:"]
-    structure_bonus = 0.10 if all(r in action_lower for r in required) else 0.0
-
-    # Length penalty
-    length_penalty = -0.05 if len(action.strip()) < 30 else 0.0
-
-    reward = min(1.0, coverage + structure_bonus + length_penalty)
-    return round(reward, 4), found
-
-# ── Routes ───────────────────────────────────────────────────────────────────
-
-@app.post("/reset")
-def reset(request: ResetRequest = Body(default=ResetRequest())):
-    """
-    Start a new episode. task_id is optional (defaults to 'easy').
-    Accepts POST with no body, or with {"task_id": "easy|medium|hard"}.
-    """
-    task_id = (request.task_id or "easy").lower()
-    if task_id not in TASKS:
-        task_id = "easy"
-
-    task = TASKS[task_id]
-
-    state.update({
-        "step": 0,
-        "current_task": task_id,
-        "diff": task["diff"],
-        "ground_truth_issues": task["ground_truth"],
-        "found_issues": [],
-        "score": 0.0,
-        "done": False,
-    })
-
-    observation = (
-        f"[CODE REVIEW TASK - Difficulty: {task_id.upper()}]\n\n"
-        f"Review the following diff and identify all issues:\n\n"
-        f"DIFF:\n{task['diff']}"
-    )
-
-    return {
-        "observation": observation,
-        "state": {k: v for k, v in state.items() if k != "diff"},
-    }
-
-
-@app.post("/step")
-def step(request: StepRequest):
-    if state["done"]:
-        return {
-            "observation": "Episode is done. Call /reset to start a new episode.",
-            "reward": 0.0,
-            "done": True,
-            "info": {},
-        }
-
-    state["step"] += 1
-    task = TASKS[state["current_task"]]
-
-    reward, newly_found = compute_reward(request.action, state["ground_truth_issues"])
-
-    for issue in newly_found:
-        if issue not in state["found_issues"]:
-            state["found_issues"].append(issue)
-
-    coverage = len(state["found_issues"]) / max(len(state["ground_truth_issues"]), 1)
-    state["score"] = round(coverage, 4)
-
-    done = (
-        state["step"] >= task["max_steps"]
-        or len(state["found_issues"]) == len(state["ground_truth_issues"])
-    )
-    state["done"] = done
-
-    observation = (
-        f"Step {state['step']} complete.\n"
-        f"Issues found so far: {state['found_issues']}\n"
-        f"Remaining issues: {[i for i in state['ground_truth_issues'] if i not in state['found_issues']]}\n\n"
-        f"DIFF:\n{state['diff']}"
-    )
-
-    return {
-        "observation": observation,
-        "reward": reward,
-        "done": done,
-        "info": {
-            "issues_found": len(state["found_issues"]),
-            "total_issues": len(state["ground_truth_issues"]),
-            "coverage": state["score"],
-            "step": state["step"],
-        },
-    }
-
-
-@app.get("/state")
-def get_state():
-    return state
-
-
-@app.get("/")
+@app.get("/", response_class=HTMLResponse)
 def root():
-    return {"status": "ok", "app": "code-review-env", "version": "1.0.0"}
+    return HTMLResponse(content="""
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Code Review Assistant — OpenEnv</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Segoe UI', sans-serif; background: #0d1117; color: #e6edf3; min-height: 100vh; }
+    header { background: linear-gradient(135deg, #1f6feb, #388bfd); padding: 32px 24px; text-align: center; }
+    header h1 { font-size: 2rem; font-weight: 700; }
+    header p  { margin-top: 8px; opacity: .85; font-size: 1rem; }
+    .badge { display:inline-block; background:#238636; color:#fff; border-radius:20px; padding:4px 14px; font-size:.8rem; margin-top:12px; }
+    main { max-width: 900px; margin: 32px auto; padding: 0 16px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px,1fr)); gap: 16px; margin-bottom: 28px; }
+    .card { background: #161b22; border: 1px solid #30363d; border-radius: 12px; padding: 20px; }
+    .card h3 { font-size: 1rem; color: #58a6ff; margin-bottom: 8px; }
+    .card p  { font-size: .875rem; color: #8b949e; line-height: 1.5; }
+    .card .tag { display:inline-block; font-size:.75rem; padding:2px 10px; border-radius:12px; margin-top:10px; font-weight:600; }
+    .easy   { background:#1a3a1a; color:#3fb950; }
+    .medium { background:#3a2a0a; color:#d29922; }
+    .hard   { background:#3a0a0a; color:#f85149; }
+    section h2 { font-size: 1.2rem; margin-bottom: 14px; color: #58a6ff; border-bottom: 1px solid #30363d; padding-bottom: 8px; }
+    .api-table { width:100%; border-collapse:collapse; font-size:.875rem; }
+    .api-table th { background:#21262d; padding:10px 14px; text-align:left; color:#8b949e; border-bottom:1px solid #30363d; }
+    .api-table td { padding:10px 14px; border-bottom:1px solid #21262d; vertical-align:top; }
+    .api-table td:first-child { color:#58a6ff; font-family:monospace; font-size:.95rem; white-space:nowrap; }
+    .method { display:inline-block; padding:2px 8px; border-radius:4px; font-size:.75rem; font-weight:700; margin-right:6px; }
+    .get  { background:#0d419d; color:#58a6ff; }
+    .post { background:#1a3a1a; color:#3fb950; }
+    .try-box { background:#161b22; border:1px solid #30363d; border-radius:12px; padding:20px; margin-top:28px; }
+    .try-box h2 { font-size:1.1rem; color:#58a6ff; margin-bottom:16px; }
+    .row { display:flex; gap:10px; flex-wrap:wrap; margin-bottom:12px; align-items:center; }
+    select, button, textarea { font-size:.875rem; border-radius:8px; border:1px solid #30363d; background:#0d1117; color:#e6edf3; padding:8px 12px; }
+    button { background:#1f6feb; border-color:#1f6feb; cursor:pointer; font-weight:600; padding:8px 18px; }
+    button:hover { background:#388bfd; }
+    textarea { width:100%; height:120px; resize:vertical; font-family:monospace; font-size:.8rem; }
+    pre { background:#0d1117; border:1px solid #30363d; border-radius:8px; padding:14px; font-size:.78rem; overflow-x:auto; white-space:pre-wrap; word-break:break-word; color:#e6edf3; max-height:320px; overflow-y:auto; }
+    .reward-bar-wrap { margin-top:10px; }
+    .reward-label { font-size:.85rem; color:#8b949e; margin-bottom:4px; }
+    .reward-bar-bg { background:#21262d; border-radius:6px; height:14px; width:100%; }
+    .reward-bar-fill { height:14px; border-radius:6px; background: linear-gradient(90deg,#f85149,#d29922,#3fb950); transition:width .5s; }
+    footer { text-align:center; padding:24px; color:#8b949e; font-size:.8rem; border-top:1px solid #30363d; margin-top:40px; }
+  </style>
+</head>
+<body>
+<header>
+  <h1>🔍 Code Review Assistant</h1>
+  <p>Real-world RL environment — AI agent reviews code diffs &amp; earns rewards for finding bugs</p>
+  <span class="badge">✅ openenv · ScalerHack 2025</span>
+</header>
+<main>
+  <div class="grid" style="margin-top:24px;">
+    <div class="card">
+      <h3>🟢 Easy</h3>
+      <p>Short Python diffs (5–20 lines) with 1–2 obvious bugs: off-by-one errors, null pointer issues.</p>
+      <span class="tag easy">Max 5 steps</span>
+    </div>
+    <div class="card">
+      <h3>🟡 Medium</h3>
+      <p>Multi-function diffs (20–60 lines) with logic errors, SQL injection, missing auth checks.</p>
+      <span class="tag medium">Max 8 steps</span>
+    </div>
+    <div class="card">
+      <h3>🔴 Hard</h3>
+      <p>Complex diffs (60–150 lines) with security vulnerabilities, race conditions, architecture flaws.</p>
+      <span class="tag hard">Max 12 steps</span>
+    </div>
+  </div>
+  <section>
+    <h2>📡 API Endpoints</h2>
+    <table class="api-table">
+      <thead><tr><th>Endpoint</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><span class="method post">POST</span>/reset</td><td>Start new episode. Body optional: <code>{"task_id": "easy|medium|hard"}</code></td></tr>
+        <tr><td><span class="method post">POST</span>/step</td><td>Submit review. Body: <code>{"action": "SEVERITY: critical | LINE: 4 | ISSUE: ... | SUGGESTION: ..."}</code></td></tr>
+        <tr><td><span class="method get">GET</span>/state</td><td>Get current environment state</td></tr>
+        <tr><td><span class="method get">GET</span>/health</td><td>Health check — returns <code>{"status":"ok"}</code></td></tr>
+      </tbody>
+    </table>
+  </section>
+  <div class="try-box">
+    <h2>🧪 Try it Live</h2>
+    <div class="row">
+      <label>Task:</label>
+      <select id="taskSel"><option>easy</option><option>medium</option><option>hard</option></select>
+      <button onclick="doReset()">▶ Reset Episode</button>
+      <button onclick="doState()">📊 Get State</button>
+    </div>
+    <div id="obsBox" style="display:none;margin-bottom:12px;">
+      <div class="reward-label">Observation:</div>
+      <pre id="obsOut"></pre>
+      <div class="reward-label" style="margin-top:10px;">Your Review (one issue per line):</div>
+      <textarea id="actionIn" placeholder="SEVERITY: critical | LINE: 4 | ISSUE: Off-by-one error | SUGGESTION: Change range(len+1) to range(len(users))"></textarea>
+      <button onclick="doStep()" style="margin-top:8px;">📨 Submit Review</button>
+    </div>
+    <div id="rewardBox" style="display:none;" class="reward-bar-wrap">
+      <div class="reward-label">Reward: <strong id="rewardVal">0.00</strong></div>
+      <div class="reward-bar-bg"><div class="reward-bar-fill" id="rewardFill" style="width:0%"></div></div>
+    </div>
+    <pre id="out">← Click "Reset Episode" to start</pre>
+  </div>
+</main>
+<footer>Built for ScalerHack · OpenEnv · Meta × PyTorch × Hugging Face</footer>
+<script>
+  const out = document.getElementById('out');
+  const obs = document.getElementById('obsOut');
+  async function doReset() {
+    const task = document.getElementById('taskSel').value;
+    out.textContent = 'Resetting...';
+    const r = await fetch('/reset', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({task_id:task})});
+    const d = await r.json();
+    obs.textContent = d.observation;
+    document.getElementById('obsBox').style.display = 'block';
+    document.getElementById('rewardBox').style.display = 'none';
+    out.textContent = JSON.stringify(d, null, 2);
+  }
+  async function doStep() {
+    const action = document.getElementById('actionIn').value.trim();
+    if (!action) { alert('Write a review first!'); return; }
+    out.textContent = 'Submitting...';
+    const r = await fetch('/step', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({action})});
+    const d = await r.json();
+    obs.textContent = d.observation;
+    const pct = Math.round((d.reward||0)*100);
+    document.getElementById('rewardBox').style.display = 'block';
+    document.getElementById('rewardVal').textContent = (d.reward||0).toFixed(4);
+    document.getElementById('rewardFill').style.width = pct+'%';
+    out.textContent = JSON.stringify(d, null, 2);
+  }
+  async function doState() {
+    const r = await fetch('/state');
+    const d = await r.json();
+    out.textContent = JSON.stringify(d, null, 2);
+  }
+</script>
+</body>
+</html>
+""")
 
+
+# ── Health ───────────────────────────────────────────────────────────────────
 
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+# ── OpenEnv API ───────────────────────────────────────────────────────────────
+
+@app.post("/reset")
+def reset(request: ResetRequest = Body(default=ResetRequest())):
+    """
+    Start a new episode.
+    Body is OPTIONAL — platform sends bare POST with no body, which defaults to task_id='easy'.
+    """
+    obs = env.reset(task_id=request.task_id or "easy")
+    return {"observation": obs.observation}
+
+
+@app.post("/step")
+def step(request: StepRequest):
+    try:
+        action = Action(action=request.action)
+        obs, reward = env.step(action)
+        return {
+            "observation": obs.observation,
+            "reward": reward.reward,
+            "done": reward.done,
+            "info": reward.info,
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/state")
+def get_state():
+    s = env.state()
+    return {
+        "step": s.step,
+        "current_task": s.current_task,
+        "diff": s.diff,
+        "ground_truth_issues": s.ground_truth_issues,
+        "found_issues": s.found_issues,
+        "score": s.score,
+        "done": s.done,
+    }
