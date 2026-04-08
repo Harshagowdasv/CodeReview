@@ -15,56 +15,39 @@ class StepRequest(BaseModel):
     action: str
 
 
-# ✅ UI (SAFE — won't break OpenEnv)
+# UI (safe)
 @app.get("/", response_class=HTMLResponse)
 def home():
     return """
     <html>
-    <head>
-        <title>CodeReview OpenEnv</title>
-        <style>
-            body { font-family: Arial; background:#0d1117; color:#fff; padding:20px;}
-            button { padding:10px; margin:5px; }
-            textarea { width:100%; height:120px; }
-            pre { background:#111; padding:10px; }
-        </style>
-    </head>
-    <body>
-        <h1>🚀 Code Review OpenEnv</h1>
-
+    <body style="background:#0d1117;color:white;font-family:Arial;padding:20px;">
+        <h1>🚀 CodeReview OpenEnv</h1>
         <button onclick="reset()">Reset</button>
-        <button onclick="state()">State</button>
-
-        <br><br>
-        <textarea id="action" placeholder="Write review..."></textarea>
-        <br>
+        <button onclick="state()">State</button><br><br>
+        <textarea id="action" style="width:100%;height:120px;"></textarea><br>
         <button onclick="step()">Submit</button>
-
-        <h3>Output:</h3>
         <pre id="output"></pre>
 
         <script>
-            async function reset() {
-                let res = await fetch('/reset', {method:'POST'});
-                let data = await res.json();
-                document.getElementById('output').innerText = JSON.stringify(data, null, 2);
+            async function reset(){
+                let r=await fetch('/reset',{method:'POST'});
+                let d=await r.json();
+                output.innerText=JSON.stringify(d,null,2);
             }
-
-            async function step() {
-                let action = document.getElementById('action').value;
-                let res = await fetch('/step', {
+            async function step(){
+                let action=document.getElementById('action').value;
+                let r=await fetch('/step',{
                     method:'POST',
                     headers:{'Content-Type':'application/json'},
-                    body: JSON.stringify({action})
+                    body:JSON.stringify({action})
                 });
-                let data = await res.json();
-                document.getElementById('output').innerText = JSON.stringify(data, null, 2);
+                let d=await r.json();
+                output.innerText=JSON.stringify(d,null,2);
             }
-
-            async function state() {
-                let res = await fetch('/state');
-                let data = await res.json();
-                document.getElementById('output').innerText = JSON.stringify(data, null, 2);
+            async function state(){
+                let r=await fetch('/state');
+                let d=await r.json();
+                output.innerText=JSON.stringify(d,null,2);
             }
         </script>
     </body>
@@ -106,3 +89,8 @@ def state():
         "score": s.score,
         "done": s.done
     }
+
+
+# ✅ REQUIRED FOR OPENENV
+def main():
+    return app
