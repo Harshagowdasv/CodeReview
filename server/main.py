@@ -1,16 +1,13 @@
 """
 FastAPI HTTP server wrapping the CodeReviewEnv.
 Implements the OpenEnv standard API: /reset, /step, /state
-
-KEY FIX: /reset accepts POST with NO body (task_id defaults to "easy")
-         using Body(default=ResetRequest()) — this is what the platform sends.
 """
 
-from fastapi import FastAPI, HTTPException, Body
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from typing import Optional
-from env import CodeReviewEnv, Action
+from env import CodeReviewEnv, Action, Observation, Reward, State
 
 app = FastAPI(
     title="Code Review Assistant - OpenEnv",
@@ -18,18 +15,17 @@ app = FastAPI(
     version="1.0.0",
 )
 
+# Single shared environment instance (stateful per session)
 env = CodeReviewEnv()
 
 
 class ResetRequest(BaseModel):
-    task_id: Optional[str] = "easy"   # optional — defaults to "easy"
+    task_id: Optional[str] = "easy"
 
 
 class StepRequest(BaseModel):
     action: str
 
-
-# ── UI ───────────────────────────────────────────────────────────────────────
 
 @app.get("/", response_class=HTMLResponse)
 def root():
@@ -56,6 +52,7 @@ def root():
     .easy   { background:#1a3a1a; color:#3fb950; }
     .medium { background:#3a2a0a; color:#d29922; }
     .hard   { background:#3a0a0a; color:#f85149; }
+
     section h2 { font-size: 1.2rem; margin-bottom: 14px; color: #58a6ff; border-bottom: 1px solid #30363d; padding-bottom: 8px; }
     .api-table { width:100%; border-collapse:collapse; font-size:.875rem; }
     .api-table th { background:#21262d; padding:10px 14px; text-align:left; color:#8b949e; border-bottom:1px solid #30363d; }
@@ -64,6 +61,7 @@ def root():
     .method { display:inline-block; padding:2px 8px; border-radius:4px; font-size:.75rem; font-weight:700; margin-right:6px; }
     .get  { background:#0d419d; color:#58a6ff; }
     .post { background:#1a3a1a; color:#3fb950; }
+
     .try-box { background:#161b22; border:1px solid #30363d; border-radius:12px; padding:20px; margin-top:28px; }
     .try-box h2 { font-size:1.1rem; color:#58a6ff; margin-bottom:16px; }
     .row { display:flex; gap:10px; flex-wrap:wrap; margin-bottom:12px; align-items:center; }
@@ -85,6 +83,7 @@ def root():
   <p>Real-world RL environment — AI agent reviews code diffs &amp; earns rewards for finding bugs</p>
   <span class="badge">✅ openenv · ScalerHack 2025</span>
 </header>
+
 <main>
   <div class="grid" style="margin-top:24px;">
     <div class="card">
@@ -103,18 +102,20 @@ def root():
       <span class="tag hard">Max 12 steps</span>
     </div>
   </div>
+
   <section>
     <h2>📡 API Endpoints</h2>
     <table class="api-table">
       <thead><tr><th>Endpoint</th><th>Description</th></tr></thead>
       <tbody>
-        <tr><td><span class="method post">POST</span>/reset</td><td>Start new episode. Body optional: <code>{"task_id": "easy|medium|hard"}</code></td></tr>
-        <tr><td><span class="method post">POST</span>/step</td><td>Submit review. Body: <code>{"action": "SEVERITY: critical | LINE: 4 | ISSUE: ... | SUGGESTION: ..."}</code></td></tr>
-        <tr><td><span class="method get">GET</span>/state</td><td>Get current environment state</td></tr>
-        <tr><td><span class="method get">GET</span>/health</td><td>Health check — returns <code>{"status":"ok"}</code></td></tr>
+        <tr><td><span class="method post">POST</span>/reset</td><td>Start a new episode. Body: <code>{"task_id": "easy|medium|hard"}</code></td></tr>
+        <tr><td><span class="method post">POST</span>/step</td><td>Submit a review action. Body: <code>{"action": "SEVERITY: critical | LINE: 4 | ISSUE: ... | SUGGESTION: ..."}</code></td></tr>
+        <tr><td><span class="method get">GET</span>/state</td><td>Get current environment state (step, score, issues found)</td></tr>
+        <tr><td><span class="method get">GET</span>/health</td><td>Health check — returns <code>{"status": "ok"}</code></td></tr>
       </tbody>
     </table>
   </section>
+
   <div class="try-box">
     <h2>🧪 Try it Live</h2>
     <div class="row">
@@ -127,7 +128,7 @@ def root():
       <div class="reward-label">Observation:</div>
       <pre id="obsOut"></pre>
       <div class="reward-label" style="margin-top:10px;">Your Review (one issue per line):</div>
-      <textarea id="actionIn" placeholder="SEVERITY: critical | LINE: 4 | ISSUE: Off-by-one error | SUGGESTION: Change range(len+1) to range(len(users))"></textarea>
+      <textarea id="actionIn" placeholder="SEVERITY: critical | LINE: 4 | ISSUE: Off-by-one error in range | SUGGESTION: Change range(len+1) to range(len(users))"></textarea>
       <button onclick="doStep()" style="margin-top:8px;">📨 Submit Review</button>
     </div>
     <div id="rewardBox" style="display:none;" class="reward-bar-wrap">
@@ -137,25 +138,30 @@ def root():
     <pre id="out">← Click "Reset Episode" to start</pre>
   </div>
 </main>
+
 <footer>Built for ScalerHack · OpenEnv · Meta × PyTorch × Hugging Face</footer>
+
 <script>
-  const out = document.getElementById('out');
-  const obs = document.getElementById('obsOut');
+  const base = '';
+  const out  = document.getElementById('out');
+  const obs  = document.getElementById('obsOut');
+
   async function doReset() {
     const task = document.getElementById('taskSel').value;
     out.textContent = 'Resetting...';
-    const r = await fetch('/reset', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({task_id:task})});
+    const r = await fetch(base+'/reset', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({task_id:task})});
     const d = await r.json();
     obs.textContent = d.observation;
     document.getElementById('obsBox').style.display = 'block';
     document.getElementById('rewardBox').style.display = 'none';
     out.textContent = JSON.stringify(d, null, 2);
   }
+
   async function doStep() {
     const action = document.getElementById('actionIn').value.trim();
     if (!action) { alert('Write a review first!'); return; }
     out.textContent = 'Submitting...';
-    const r = await fetch('/step', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({action})});
+    const r = await fetch(base+'/step', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({action})});
     const d = await r.json();
     obs.textContent = d.observation;
     const pct = Math.round((d.reward||0)*100);
@@ -164,8 +170,9 @@ def root():
     document.getElementById('rewardFill').style.width = pct+'%';
     out.textContent = JSON.stringify(d, null, 2);
   }
+
   async function doState() {
-    const r = await fetch('/state');
+    const r = await fetch(base+'/state');
     const d = await r.json();
     out.textContent = JSON.stringify(d, null, 2);
   }
@@ -175,21 +182,14 @@ def root():
 """)
 
 
-# ── Health ───────────────────────────────────────────────────────────────────
 
 @app.get("/health")
 def health():
     return {"status": "ok"}
 
 
-# ── OpenEnv API ───────────────────────────────────────────────────────────────
-
 @app.post("/reset")
-def reset(request: ResetRequest = Body(default=ResetRequest())):
-    """
-    Start a new episode.
-    Body is OPTIONAL — platform sends bare POST with no body, which defaults to task_id='easy'.
-    """
+def reset(request: ResetRequest):
     obs = env.reset(task_id=request.task_id or "easy")
     return {"observation": obs.observation}
 
@@ -210,7 +210,7 @@ def step(request: StepRequest):
 
 
 @app.get("/state")
-def get_state():
+def state():
     s = env.state()
     return {
         "step": s.step,

@@ -14,11 +14,11 @@ from pydantic import BaseModel
 # ──────────────────────────────────────────────
 
 class Action(BaseModel):
-    action: str
+    action: str  # Structured review comment(s)
 
 
 class Observation(BaseModel):
-    observation: str
+    observation: str  # The code diff + metadata
 
 
 class Reward(BaseModel):
@@ -64,7 +64,7 @@ DIFFS = {
 """,
             "issues": [
                 {"severity": "critical", "line": "4", "keyword": "off-by-one", "alt": ["index out of range", "range len+1", "out of bounds"]},
-                {"severity": "info",     "line": "9", "keyword": "discount",   "alt": ["division", "percentage", "100"]},
+                {"severity": "info", "line": "9", "keyword": "discount", "alt": ["division", "percentage", "100"]},
             ],
         },
         {
@@ -87,7 +87,7 @@ DIFFS = {
      return None
 """,
             "issues": [
-                {"severity": "major", "line": "7", "keyword": "null",  "alt": ["none check", "user is none", "attributeerror", "no null check"]},
+                {"severity": "major", "line": "7", "keyword": "null", "alt": ["none check", "user is none", "attributeerror", "no null check"]},
                 {"severity": "major", "line": "6", "keyword": "plain", "alt": ["hash", "bcrypt", "plaintext", "password comparison", "not hashed"]},
             ],
         },
@@ -127,10 +127,10 @@ DIFFS = {
      return orders
 """,
             "issues": [
-                {"severity": "critical", "line": "3",  "keyword": "authorization",      "alt": ["auth check", "permission", "removed auth", "idor", "access control"]},
-                {"severity": "critical", "line": "19", "keyword": "sql injection",       "alt": ["f-string query", "unsanitized", "sql", "injection"]},
-                {"severity": "major",    "line": "15", "keyword": "duplicate save",      "alt": ["db.save called twice", "double save", "redundant"]},
-                {"severity": "minor",    "line": "8",  "keyword": "multiply 1.0",        "alt": ["unnecessary", "float cast", "redundant multiplication"]},
+                {"severity": "critical", "line": "3", "keyword": "authorization", "alt": ["auth check", "permission", "removed auth", "idor", "access control"]},
+                {"severity": "critical", "line": "19", "keyword": "sql injection", "alt": ["f-string query", "unsanitized", "sql", "injection"]},
+                {"severity": "major", "line": "15", "keyword": "duplicate save", "alt": ["db.save called twice", "double save", "redundant"]},
+                {"severity": "minor", "line": "8", "keyword": "multiply 1.0", "alt": ["unnecessary", "float cast", "redundant multiplication"]},
             ],
         },
     ],
@@ -179,12 +179,12 @@ DIFFS = {
      return None
 """,
             "issues": [
-                {"severity": "critical", "line": "7",  "keyword": "path traversal",    "alt": ["directory traversal", "secure_filename removed", "unsafe filename", "../"]},
-                {"severity": "critical", "line": "9",  "keyword": "svg",               "alt": ["xss", "svg upload", "script injection", "svg xss"]},
+                {"severity": "critical", "line": "7", "keyword": "path traversal", "alt": ["directory traversal", "secure_filename removed", "unsafe filename", "../"]},
+                {"severity": "critical", "line": "9", "keyword": "svg", "alt": ["xss", "svg upload", "script injection", "svg xss"]},
                 {"severity": "critical", "line": "21", "keyword": "predictable token", "alt": ["weak token", "not random", "secrets", "user_id token", "time token"]},
-                {"severity": "critical", "line": "27", "keyword": "session expiry",    "alt": ["no expiry", "session never expires", "timeout removed"]},
-                {"severity": "major",    "line": "10", "keyword": "subprocess",        "alt": ["command injection", "shell", "arbitrary command"]},
-                {"severity": "major",    "line": "14", "keyword": "path traversal url","alt": ["secure_filename", "url filename unsafe"]},
+                {"severity": "critical", "line": "27", "keyword": "session expiry", "alt": ["no expiry", "session never expires", "timeout removed"]},
+                {"severity": "major", "line": "10", "keyword": "subprocess", "alt": ["command injection", "shell", "arbitrary command"]},
+                {"severity": "major", "line": "14", "keyword": "path traversal url", "alt": ["secure_filename", "url filename unsafe"]},
             ],
         },
     ],
@@ -196,14 +196,20 @@ DIFFS = {
 # ──────────────────────────────────────────────
 
 def score_review(action_text: str, ground_truth_issues: list) -> tuple[float, list]:
+    """
+    Score the review against ground truth issues.
+    Returns (score 0.0-1.0, list of matched issues)
+    """
     text_lower = action_text.lower()
     found = []
 
     for issue in ground_truth_issues:
         matched = False
+        # Check primary keyword
         if issue["keyword"] in text_lower:
             matched = True
         else:
+            # Check alternative phrasings
             for alt in issue.get("alt", []):
                 if alt in text_lower:
                     matched = True
@@ -211,15 +217,18 @@ def score_review(action_text: str, ground_truth_issues: list) -> tuple[float, li
         if matched:
             found.append(issue["keyword"])
 
+    # Base score: fraction of issues found
     if not ground_truth_issues:
         return 0.0, found
 
     base_score = len(found) / len(ground_truth_issues)
 
+    # Bonus: reward for structured format (SEVERITY: ... | LINE: ... | ISSUE: ...)
     structure_bonus = 0.0
     if re.search(r"severity\s*:", text_lower) and re.search(r"issue\s*:", text_lower):
         structure_bonus = 0.1
 
+    # Penalty: overly short reviews (< 50 chars per issue found)
     length_penalty = 0.0
     if len(found) > 0 and len(action_text) < 50 * len(found):
         length_penalty = 0.05
@@ -277,6 +286,7 @@ class CodeReviewEnv:
 
         max_steps = self._max_steps.get(self._task_id, 5)
         done = score >= 0.9 or self._state.step >= max_steps
+
         self._state.done = done
 
         reward = Reward(
@@ -303,9 +313,5 @@ class CodeReviewEnv:
 
     def state(self) -> State:
         if self._state is None:
-            return State(
-                step=0, current_task="", diff="",
-                ground_truth_issues=[], found_issues=[],
-                score=0.0, done=False
-            )
+            return State(step=0, current_task="", diff="", ground_truth_issues=[], found_issues=[], score=0.0, done=False)
         return self._state
