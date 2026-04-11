@@ -7,7 +7,10 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from typing import Optional
-from env import CodeReviewEnv, Action, Observation, Reward, State
+try:
+    from server.env import CodeReviewEnv, Action, Observation, Reward, State
+except ImportError:
+    from env import CodeReviewEnv, Action, Observation, Reward, State
 
 app = FastAPI(
     title="Code Review Assistant - OpenEnv",

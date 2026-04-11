@@ -15,16 +15,13 @@ dependencies = [
     "fastapi>=0.111.0",
     "uvicorn>=0.30.1",
     "pydantic>=2.7.1",
-]
-
-[project.optional-dependencies]
-inference = [
+    "openenv-core>=0.2.0",
     "openai>=1.30.0",
     "requests>=2.31.0",
 ]
 
-[tool.setuptools.packages.find]
-where = ["server"]
+[project.scripts]
+server = "server.app:main"
 
-[tool.setuptools.package-dir]
-"" = "server"
+[tool.setuptools.packages.find]
+where = ["."]
