@@ -233,7 +233,9 @@ def score_review(action_text: str, ground_truth_issues: list) -> tuple[float, li
     if len(found) > 0 and len(action_text) < 50 * len(found):
         length_penalty = 0.05
 
-    final = min(1.0, base_score + structure_bonus - length_penalty)
+    final = base_score + structure_bonus - length_penalty
+    # Clamp strictly between 0 and 1 (exclusive) as required by the validator
+    final = max(0.01, min(0.99, final))
     return round(final, 4), found
 
 

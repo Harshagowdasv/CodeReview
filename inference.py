@@ -80,12 +80,12 @@ def run_task(env_url: str, task_id: str) -> dict:
         observation = reset_resp.json()["observation"]
     except Exception as e:
         print(f"[WARN] Reset failed: {e}", flush=True)
-        print(f"[STEP] step=1 reward=0.0", flush=True)
-        print(f"[END] task={task_id} score=0.0 steps=1", flush=True)
-        return {"score": 0.0, "steps": 1}
+        print(f"[STEP] step=1 reward=0.01", flush=True)
+        print(f"[END] task={task_id} score=0.01 steps=1", flush=True)
+        return {"score": 0.01, "steps": 1}
 
     messages     = [{"role": "system", "content": SYSTEM_PROMPT}]
-    final_reward = 0.0
+    final_reward = 0.01
     step_count   = 0
 
     for step in range(1, MAX_STEPS + 1):
@@ -114,7 +114,7 @@ def run_task(env_url: str, task_id: str) -> dict:
                 break
         except Exception as e:
             print(f"[WARN] Step {step} failed: {e}", flush=True)
-            print(f"[STEP] step={step} reward=0.0", flush=True)
+            print(f"[STEP] step={step} reward=0.01", flush=True)
             break
 
     # ── [END] block ────────────────────────────────────────────
@@ -134,9 +134,9 @@ def main():
         except Exception as e:
             print(f"[WARN] Task '{task_id}' crashed: {e}", flush=True)
             print(f"[START] task={task_id}", flush=True)
-            print(f"[STEP] step=1 reward=0.0", flush=True)
-            print(f"[END] task={task_id} score=0.0 steps=1", flush=True)
-            results[task_id] = {"score": 0.0, "steps": 1}
+            print(f"[STEP] step=1 reward=0.01", flush=True)
+            print(f"[END] task={task_id} score=0.01 steps=1", flush=True)
+            results[task_id] = {"score": 0.01, "steps": 1}
 
     scores = [v["score"] for v in results.values()]
     avg    = sum(scores) / len(scores) if scores else 0.0
