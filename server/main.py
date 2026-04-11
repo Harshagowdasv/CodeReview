@@ -3,7 +3,7 @@ FastAPI HTTP server wrapping the CodeReviewEnv.
 Implements the OpenEnv standard API: /reset, /step, /state
 """
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from typing import Optional
@@ -189,8 +189,13 @@ def health():
 
 
 @app.post("/reset")
-def reset(request: ResetRequest):
-    obs = env.reset(task_id=request.task_id or "easy")
+async def reset(request: Request):
+    try:
+        body = await request.json()
+        task_id = body.get("task_id", "easy") if body else "easy"
+    except Exception:
+        task_id = "easy"
+    obs = env.reset(task_id=task_id or "easy")
     return {"observation": obs.observation}
 
 
